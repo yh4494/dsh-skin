@@ -1,6 +1,9 @@
 // src/http-ready.js
 'use strict';
 
+// Default readiness uses Node http/https (not undici fetch): in Electron main,
+// fetch to 127.0.0.1 can false-negative on first probe and cause a duplicate
+// `dsh web` spawn during port reuse. Inject opts.fetch only in unit tests.
 const http = require('node:http');
 const https = require('node:https');
 const { URL } = require('node:url');

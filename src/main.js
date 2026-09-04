@@ -4,6 +4,7 @@ const { getPort, getBaseUrl } = require('./config');
 const { createLauncher } = require('./dsh-launcher');
 
 let mainWindow;
+let bootInFlight = false;
 const launcher = createLauncher();
 const loadingPath = path.join(__dirname, 'loading.html');
 
@@ -15,18 +16,24 @@ function showLoadingError(message) {
 }
 
 async function bootDsh() {
+  if (bootInFlight) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
-  const port = getPort();
-  const baseUrl = getBaseUrl(port);
-  await mainWindow.loadFile(loadingPath);
-
+  bootInFlight = true;
   try {
-    await launcher.start({ port, baseUrl });
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    await mainWindow.loadURL(baseUrl);
-  } catch (err) {
-    await showLoadingError(err.message || err);
+    const port = getPort();
+    const baseUrl = getBaseUrl(port);
+    await mainWindow.loadFile(loadingPath);
+
+    try {
+      await launcher.start({ port, baseUrl });
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      await mainWindow.loadURL(baseUrl);
+    } catch (err) {
+      await showLoadingError(err.message || err);
+    }
+  } finally {
+    bootInFlight = false;
   }
 }
 

@@ -1,7 +1,21 @@
 // test/http-ready.test.js
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const http = require('node:http');
 const { isHttpReady, waitForHttp } = require('../src/http-ready.js');
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.listen(0, '127.0.0.1', (err) => {
+      if (err) reject(err);
+      else resolve(server.address().port);
+    });
+  });
+}
+
+function close(server) {
+  return new Promise((resolve) => server.close(() => resolve()));
+}
 
 describe('http-ready', () => {
   it('isHttpReady true on 200', async () => {
@@ -13,7 +27,7 @@ describe('http-ready', () => {
     const fetch = async () => {
       throw Object.assign(new Error('fail'), { code: 'ECONNREFUSED' });
     };
-    assert.equal(await isHttpReady('http://127.0.0.1:9', { fetch }), false);
+    assert.equal(await isHttpReady('http://127.0.0.1:9', { fetch, attempts: 1 }), false);
   });
 
   it('waitForHttp resolves when ready', async () => {
@@ -33,6 +47,30 @@ describe('http-ready', () => {
     await assert.rejects(
       () => waitForHttp('http://127.0.0.1:9', { fetch, intervalMs: 10, timeoutMs: 50 }),
       /ready/,
+    );
+  });
+
+  it('default probe true against local http server', async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200);
+      res.end('ok');
+    });
+    const port = await listen(server);
+    try {
+      assert.equal(await isHttpReady(`http://127.0.0.1:${port}`), true);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('default probe false when nothing listens', async () => {
+    // Prefer an ephemeral closed port: bind then close to learn a free port.
+    const binder = http.createServer();
+    const port = await listen(binder);
+    await close(binder);
+    assert.equal(
+      await isHttpReady(`http://127.0.0.1:${port}`, { attempts: 1, timeoutMs: 300 }),
+      false,
     );
   });
 });
