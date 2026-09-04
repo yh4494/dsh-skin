@@ -6,6 +6,7 @@ const { createLauncher } = require('./dsh-launcher');
 let mainWindow;
 let tray;
 let isQuitting = false;
+let quitCleanupDone = false;
 let bootInFlight = false;
 const launcher = createLauncher();
 const loadingPath = path.join(__dirname, 'loading.html');
@@ -57,12 +58,6 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
-async function quitApp() {
-  isQuitting = true;
-  await launcher.stop();
-  app.quit();
-}
-
 function createTray() {
   const iconPath = path.join(__dirname, '..', 'assets', 'trayTemplate.png');
   const icon = nativeImage.createFromPath(iconPath);
@@ -78,9 +73,8 @@ function createTray() {
       },
       {
         label: '退出',
-        click: () => {
-          quitApp();
-        },
+        // Routes through before-quit so stop runs on every quit path.
+        click: () => app.quit(),
       },
     ]),
   );
@@ -114,8 +108,16 @@ app.whenReady().then(async () => {
   await bootDsh();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
   isQuitting = true;
+  if (quitCleanupDone) return;
+
+  // Cancel this quit pass, stop owned dsh, then quit again (no recurse).
+  e.preventDefault();
+  launcher.stop().finally(() => {
+    quitCleanupDone = true;
+    app.quit();
+  });
 });
 
 app.on('window-all-closed', (e) => {
