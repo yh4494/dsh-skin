@@ -18,12 +18,16 @@ function createLauncher(deps = {}) {
     exitCbs: [],
   };
 
+  function clearChildState() {
+    state.child = null;
+    state.owned = false;
+    state.stopping = false;
+  }
+
   function attachExitHandler(child) {
     child.once('exit', (code, signal) => {
       const wasStopping = state.stopping;
-      state.child = null;
-      state.owned = false;
-      state.stopping = false;
+      clearChildState();
       if (!wasStopping) {
         for (const cb of state.exitCbs) {
           try {
@@ -36,11 +40,17 @@ function createLauncher(deps = {}) {
     });
   }
 
+  function formatSpawnError(err, bin) {
+    if (err && err.code === 'ENOENT') {
+      return new Error(`Failed to spawn dsh: ${bin} not found (ENOENT)`);
+    }
+    const detail = err && err.message ? err.message : String(err);
+    return new Error(`Failed to spawn dsh: ${detail}`);
+  }
+
   async function stop() {
     if (!state.owned || !state.child) {
-      state.owned = false;
-      state.child = null;
-      state.stopping = false;
+      clearChildState();
       return;
     }
 
@@ -48,9 +58,7 @@ function createLauncher(deps = {}) {
     state.stopping = true;
 
     if (child.exitCode !== null || child.killed) {
-      state.child = null;
-      state.owned = false;
-      state.stopping = false;
+      clearChildState();
       return;
     }
 
@@ -77,13 +85,15 @@ function createLauncher(deps = {}) {
       }, killGraceMs);
     });
 
-    state.child = null;
-    state.owned = false;
-    state.stopping = false;
+    clearChildState();
   }
 
   async function start({ port, baseUrl }) {
     if (await isHttpReady(baseUrl)) {
+      // Already owned + ready: keep the existing child (do not orphan).
+      if (state.owned && state.child) {
+        return { reused: true };
+      }
       state.owned = false;
       state.child = null;
       return { reused: true };
@@ -102,8 +112,17 @@ function createLauncher(deps = {}) {
     state.stopping = false;
     attachExitHandler(child);
 
+    const spawnFailed = new Promise((_, reject) => {
+      child.once('error', (err) => {
+        if (state.child === child) {
+          clearChildState();
+        }
+        reject(formatSpawnError(err, bin));
+      });
+    });
+
     try {
-      await waitForHttp(baseUrl);
+      await Promise.race([waitForHttp(baseUrl), spawnFailed]);
     } catch (err) {
       await stop();
       throw err;

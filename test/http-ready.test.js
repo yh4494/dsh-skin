@@ -50,6 +50,36 @@ describe('http-ready', () => {
     );
   });
 
+  it('waitForHttp uses probeTimeoutMs not total timeoutMs per probe', async () => {
+    let firstAbortMs = null;
+    const t0 = Date.now();
+    const fetch = (_url, { signal }) =>
+      new Promise((_, reject) => {
+        signal.addEventListener('abort', () => {
+          if (firstAbortMs == null) firstAbortMs = Date.now() - t0;
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        });
+      });
+
+    await assert.rejects(
+      () =>
+        waitForHttp('http://127.0.0.1:9', {
+          fetch,
+          intervalMs: 5,
+          timeoutMs: 130,
+          probeTimeoutMs: 40,
+        }),
+      /ready/,
+    );
+
+    assert.ok(firstAbortMs != null);
+    // If total timeoutMs (130) were wrongly used as probe timeout, abort ≈130ms.
+    assert.ok(
+      firstAbortMs >= 15 && firstAbortMs < 100,
+      `expected ~40ms probe abort, got ${firstAbortMs}ms`,
+    );
+  });
+
   it('default probe true against local http server', async () => {
     const server = http.createServer((_req, res) => {
       res.writeHead(200);

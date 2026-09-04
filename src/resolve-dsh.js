@@ -16,8 +16,10 @@ function defaultWhichSync(cmd) {
 function defaultNvmCandidates(homedir) {
   const base = path.join(homedir, '.nvm', 'versions', 'node');
   if (!fs.existsSync(base)) return [];
+  // Path-sort version dirs (numeric-aware), pick last existing via caller.
   return fs
     .readdirSync(base)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     .map((v) => path.join(base, v, 'bin', 'dsh'))
     .filter((p) => fs.existsSync(p));
 }
@@ -32,7 +34,7 @@ function resolveDshPath(deps = {}) {
   if (env.DSH_BIN && existsSync(env.DSH_BIN)) return env.DSH_BIN;
 
   const fromWhich = whichSync('dsh');
-  if (fromWhich) return fromWhich;
+  if (fromWhich && existsSync(fromWhich)) return fromWhich;
 
   const nvm = nvmCandidates();
   if (nvm.length > 0) return nvm[nvm.length - 1];

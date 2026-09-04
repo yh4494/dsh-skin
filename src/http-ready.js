@@ -80,10 +80,17 @@ async function isHttpReady(baseUrl, opts = {}) {
 
 async function waitForHttp(baseUrl, opts = {}) {
   const intervalMs = opts.intervalMs ?? 250;
+  // Total wait budget — must not be forwarded as per-probe timeout.
   const timeoutMs = opts.timeoutMs ?? 60000;
+  const probeTimeoutMs = opts.probeTimeoutMs ?? 1500;
   const start = Date.now();
-  // Loop already retries; keep each probe to a single attempt.
-  const probeOpts = { ...opts, attempts: opts.attempts ?? 1 };
+  // Loop already retries; keep each probe to a single attempt with short timeout.
+  const probeOpts = {
+    fetch: opts.fetch,
+    timeoutMs: probeTimeoutMs,
+    attempts: opts.attempts ?? 1,
+    retryDelayMs: opts.retryDelayMs,
+  };
   while (Date.now() - start < timeoutMs) {
     if (await isHttpReady(baseUrl, probeOpts)) return;
     await new Promise((r) => setTimeout(r, intervalMs));
