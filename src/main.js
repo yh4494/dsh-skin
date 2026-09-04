@@ -1,9 +1,11 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const { getPort, getBaseUrl } = require('./config');
 const { createLauncher } = require('./dsh-launcher');
 
 let mainWindow;
+let tray;
+let isQuitting = false;
 let bootInFlight = false;
 const launcher = createLauncher();
 const loadingPath = path.join(__dirname, 'loading.html');
@@ -45,6 +47,45 @@ ipcMain.on('dsh-skin:retry', () => {
   bootDsh();
 });
 
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    bootDsh();
+    return;
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+async function quitApp() {
+  isQuitting = true;
+  await launcher.stop();
+  app.quit();
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, '..', 'assets', 'trayTemplate.png');
+  const icon = nativeImage.createFromPath(iconPath);
+  icon.setTemplateImage(true);
+
+  tray = new Tray(icon);
+  tray.setToolTip('dsh-skin');
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: '显示',
+        click: () => showMainWindow(),
+      },
+      {
+        label: '退出',
+        click: () => {
+          quitApp();
+        },
+      },
+    ]),
+  );
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -55,23 +96,33 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.loadFile(loadingPath);
 }
 
 app.whenReady().then(async () => {
   createWindow();
+  createTray();
+  app.dock?.show();
   await bootDsh();
 });
 
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('window-all-closed', (e) => {
-  // Task 5: prevent default quit so later tray hide can attach.
-  // On non-macOS Electron would otherwise quit; keep process for upcoming tasks.
+  // Keep process alive when window is hidden to tray.
   e.preventDefault();
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-    bootDsh();
-  }
+  showMainWindow();
 });
