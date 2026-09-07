@@ -68,6 +68,7 @@ describe('dsh-launcher', () => {
     const child = fakeChild();
     const launcher = createLauncher({
       isHttpReady: async () => false,
+      diagnoseListen: async () => 'refused',
       waitForHttp: async () => {},
       resolveDshPath: () => '/bin/dsh',
       spawn: (cmd, args) => {
