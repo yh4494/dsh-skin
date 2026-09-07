@@ -6,7 +6,10 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "git:auto": "bash scripts/git-auto.sh",
+    "git:auto:dry": "bash scripts/git-auto.sh --dry-run",
+    "git:auto:local": "bash scripts/git-auto.sh --no-push"
   },
   "devDependencies": {
     "electron": "^37.0.0"
