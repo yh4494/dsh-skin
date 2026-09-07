@@ -6,6 +6,7 @@
 // `dsh web` spawn during port reuse. Inject opts.fetch only in unit tests.
 const http = require('node:http');
 const https = require('node:https');
+const net = require('node:net');
 const { URL } = require('node:url');
 
 function probeWithHttp(baseUrl, timeoutMs) {
@@ -98,4 +99,48 @@ async function waitForHttp(baseUrl, opts = {}) {
   throw new Error('dsh did not become ready in time');
 }
 
-module.exports = { isHttpReady, waitForHttp };
+function defaultConnect(hostname, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: hostname, port }, () => {
+      socket.destroy();
+      resolve();
+    });
+    socket.setTimeout(timeoutMs);
+    socket.on('timeout', () => {
+      socket.destroy();
+      reject(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+    });
+    socket.on('error', reject);
+  });
+}
+
+async function diagnoseListen(baseUrl, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 1500;
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return 'unknown';
+  }
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+  const hostname = url.hostname;
+  const connect = opts.connect
+    ? (h, p) => opts.connect(h, p)
+    : (h, p) => defaultConnect(h, p, timeoutMs);
+  const probeHttp =
+    opts.probeHttp ?? ((u) => isHttpReady(u, { timeoutMs, attempts: 1 }));
+
+  if (await probeHttp(baseUrl)) return 'ready';
+
+  try {
+    await connect(hostname, port);
+    return 'non_http';
+  } catch (err) {
+    if (err && (err.code === 'ECONNREFUSED' || err.code === 'ENOENT')) {
+      return 'refused';
+    }
+    return 'unknown';
+  }
+}
+
+module.exports = { isHttpReady, waitForHttp, diagnoseListen };

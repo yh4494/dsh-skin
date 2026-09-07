@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { isHttpReady, waitForHttp } = require('../src/http-ready.js');
+const { isHttpReady, waitForHttp, diagnoseListen } = require('../src/http-ready.js');
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -102,5 +102,33 @@ describe('http-ready', () => {
       await isHttpReady(`http://127.0.0.1:${port}`, { attempts: 1, timeoutMs: 300 }),
       false,
     );
+  });
+});
+
+describe('diagnoseListen', () => {
+  it('returns ready when HTTP probe succeeds', async () => {
+    const status = await diagnoseListen('http://127.0.0.1:9', {
+      connect: async () => {},
+      probeHttp: async () => true,
+    });
+    assert.equal(status, 'ready');
+  });
+
+  it('returns refused when connect fails with ECONNREFUSED', async () => {
+    const status = await diagnoseListen('http://127.0.0.1:9', {
+      connect: async () => {
+        throw Object.assign(new Error('refused'), { code: 'ECONNREFUSED' });
+      },
+      probeHttp: async () => false,
+    });
+    assert.equal(status, 'refused');
+  });
+
+  it('returns non_http when TCP connects but HTTP fails', async () => {
+    const status = await diagnoseListen('http://127.0.0.1:9', {
+      connect: async () => {},
+      probeHttp: async () => false,
+    });
+    assert.equal(status, 'non_http');
   });
 });
