@@ -49,18 +49,25 @@ async function bootDsh() {
 
     try {
       await launcher.start({ port, baseUrl });
-      if (!mainWindow || mainWindow.isDestroyed() || !bootGen.isCurrent(gen)) return;
-      await mainWindow.loadURL(baseUrl);
-      if (!bootGen.isCurrent(gen)) return;
-      health.start(baseUrl, () => {
-        reportUnhealthy(
-          gen,
-          createDshError(DshErrorCode.UNREACHABLE, 'unreachable'),
-        );
-      });
     } catch (err) {
       reportUnhealthy(gen, err);
+      return;
     }
+    if (!mainWindow || mainWindow.isDestroyed() || !bootGen.isCurrent(gen)) return;
+    try {
+      await mainWindow.loadURL(baseUrl);
+    } catch {
+      // Ignore: did-fail-load / render-process-gone own silent reload ≤1
+      // then error page. Do not reportUnhealthy here (would steal that path).
+      return;
+    }
+    if (!bootGen.isCurrent(gen)) return;
+    health.start(baseUrl, () => {
+      reportUnhealthy(
+        gen,
+        createDshError(DshErrorCode.UNREACHABLE, 'unreachable'),
+      );
+    });
   } finally {
     bootInFlight = false;
   }
