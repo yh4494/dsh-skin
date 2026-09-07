@@ -2,14 +2,35 @@
 
 const { spawn: defaultSpawn } = require('child_process');
 const { resolveDshPath: defaultResolveDshPath } = require('./resolve-dsh.js');
-const { isHttpReady: defaultIsHttpReady, waitForHttp: defaultWaitForHttp } = require('./http-ready.js');
+const {
+  isHttpReady: defaultIsHttpReady,
+  waitForHttp: defaultWaitForHttp,
+  diagnoseListen: defaultDiagnoseListen,
+} = require('./http-ready.js');
+const { DshErrorCode, createDshError } = require('./errors.js');
+
+function defaultKillTree(pid, signal, child) {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // process may already be gone
+    }
+  }
+}
 
 function createLauncher(deps = {}) {
   const isHttpReady = deps.isHttpReady ?? defaultIsHttpReady;
   const waitForHttp = deps.waitForHttp ?? defaultWaitForHttp;
+  const diagnoseListen = deps.diagnoseListen ?? defaultDiagnoseListen;
   const resolveDshPath = deps.resolveDshPath ?? defaultResolveDshPath;
   const spawn = deps.spawn ?? defaultSpawn;
   const killGraceMs = deps.killGraceMs ?? 1500;
+  const killTree =
+    deps.killTree ??
+    ((pid, signal) => defaultKillTree(pid, signal, state.child));
 
   const state = {
     owned: false,
@@ -42,10 +63,13 @@ function createLauncher(deps = {}) {
 
   function formatSpawnError(err, bin) {
     if (err && err.code === 'ENOENT') {
-      return new Error(`Failed to spawn dsh: ${bin} not found (ENOENT)`);
+      return createDshError(
+        DshErrorCode.SPAWN_FAILED,
+        `Failed to spawn dsh: ${bin} not found (ENOENT)`,
+      );
     }
     const detail = err && err.message ? err.message : String(err);
-    return new Error(`Failed to spawn dsh: ${detail}`);
+    return createDshError(DshErrorCode.SPAWN_FAILED, `Failed to spawn dsh: ${detail}`);
   }
 
   async function stop() {
@@ -72,12 +96,12 @@ function createLauncher(deps = {}) {
       };
 
       child.once('exit', done);
-      child.kill('SIGTERM');
+      killTree(child.pid, 'SIGTERM');
 
       const timer = setTimeout(() => {
         try {
           if (child.exitCode === null) {
-            child.kill('SIGKILL');
+            killTree(child.pid, 'SIGKILL');
           }
         } catch {
           // process may already be gone
@@ -99,13 +123,19 @@ function createLauncher(deps = {}) {
       return { reused: true };
     }
 
+    const diag = await diagnoseListen(baseUrl);
+    if (diag === 'non_http') {
+      throw createDshError(DshErrorCode.PORT_BUSY_NON_HTTP, 'port busy non-http');
+    }
+
     const bin = resolveDshPath();
     if (!bin) {
-      throw new Error('dsh not found');
+      throw createDshError(DshErrorCode.NOT_FOUND, 'dsh not found');
     }
 
     const child = spawn(bin, ['web', '--no-open', '--port', String(port)], {
       stdio: 'inherit',
+      detached: true,
     });
     state.child = child;
     state.owned = true;
@@ -125,6 +155,12 @@ function createLauncher(deps = {}) {
       await Promise.race([waitForHttp(baseUrl), spawnFailed]);
     } catch (err) {
       await stop();
+      if (err && err.code === DshErrorCode.SPAWN_FAILED) {
+        throw err;
+      }
+      if (err && err.message === 'dsh did not become ready in time') {
+        throw createDshError(DshErrorCode.TIMEOUT, 'dsh did not become ready in time');
+      }
       throw err;
     }
 
