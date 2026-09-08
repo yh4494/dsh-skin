@@ -33,6 +33,34 @@ function reportUnhealthy(gen, err) {
   });
 }
 
+function urlHasLaunchToken(url) {
+  try {
+    return Boolean(new URL(url).searchParams.get('token'));
+  } catch {
+    return false;
+  }
+}
+
+async function pageNeedsAuthentication() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  try {
+    const text = await mainWindow.webContents.executeJavaScript(
+      `(document.body && document.body.innerText) || ''`,
+      true,
+    );
+    return /authentication required/i.test(String(text));
+  } catch {
+    return false;
+  }
+}
+
+async function loadAppUrl(appUrl) {
+  await mainWindow.loadURL(appUrl);
+  if (urlHasLaunchToken(appUrl)) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 async function bootDsh() {
   if (bootInFlight) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -47,21 +75,32 @@ async function bootDsh() {
     const baseUrl = getBaseUrl(port);
     await mainWindow.loadFile(loadingPath);
 
+    let appUrl = baseUrl;
     try {
-      await launcher.start({ port, baseUrl });
+      const started = await launcher.start({ port, baseUrl });
+      appUrl = started.appUrl || baseUrl;
     } catch (err) {
       reportUnhealthy(gen, err);
       return;
     }
     if (!mainWindow || mainWindow.isDestroyed() || !bootGen.isCurrent(gen)) return;
     try {
-      await mainWindow.loadURL(baseUrl);
+      await loadAppUrl(appUrl);
     } catch {
       // Ignore: did-fail-load / render-process-gone own silent reload ≤1
       // then error page. Do not reportUnhealthy here (would steal that path).
       return;
     }
     if (!bootGen.isCurrent(gen)) return;
+
+    if (await pageNeedsAuthentication()) {
+      reportUnhealthy(
+        gen,
+        createDshError(DshErrorCode.AUTH_REQUIRED, 'auth required'),
+      );
+      return;
+    }
+
     health.start(baseUrl, () => {
       reportUnhealthy(
         gen,
@@ -74,6 +113,7 @@ async function bootDsh() {
 }
 
 launcher.onExit(() => {
+  if (isQuitting) return;
   reportUnhealthy(
     activeGen,
     createDshError(DshErrorCode.DSH_EXITED, 'dsh exited'),
@@ -109,7 +149,6 @@ function createTray() {
       },
       {
         label: '退出',
-        // Routes through before-quit so stop runs on every quit path.
         click: () => app.quit(),
       },
     ]),
@@ -127,15 +166,12 @@ function createWindow() {
     },
   });
 
+  // Close (✕) quits the shell and stops the owned dsh process.
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault();
-      mainWindow.hide();
+      app.quit();
     }
-  });
-
-  mainWindow.on('minimize', () => {
-    mainWindow.hide();
   });
 
   mainWindow.webContents.on('did-fail-load', (_e, _code, _desc, url, isMainFrame) => {
@@ -190,9 +226,19 @@ app.on('before-quit', (e) => {
   });
 });
 
-app.on('window-all-closed', (e) => {
-  // Keep process alive when window is hidden to tray.
-  e.preventDefault();
+// Ctrl+C / kill: route through app.quit so before-quit can stop owned dsh.
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    if (isQuitting && quitCleanupDone) {
+      process.exit(0);
+      return;
+    }
+    app.quit();
+  });
+}
+
+app.on('window-all-closed', () => {
+  if (!isQuitting) app.quit();
 });
 
 app.on('activate', () => {

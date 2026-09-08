@@ -17,6 +17,10 @@ describe('error-messages', () => {
       messageForError(createDshError(DshErrorCode.UNREACHABLE, 'x')),
       /不可达|服务/,
     );
+    assert.match(
+      messageForError(createDshError(DshErrorCode.AUTH_REQUIRED, 'x')),
+      /认证|重试|令牌|dsh/,
+    );
   });
 
   it('falls back for unknown errors', () => {

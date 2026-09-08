@@ -15,6 +15,8 @@ const MESSAGES = {
   [DshErrorCode.UNREACHABLE]:
     '本地服务不可达（可能已停止）。可点击重试。',
   [DshErrorCode.RENDERER_FAILED]: '页面加载失败。可点击重试。',
+  [DshErrorCode.AUTH_REQUIRED]:
+    'dsh web 未能完成启动认证。请点击重试；若仍失败，请确认本机 dsh 版本支持 web 启动令牌。',
 };
 
 function messageForError(err) {

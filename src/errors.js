@@ -8,6 +8,7 @@ const DshErrorCode = Object.freeze({
   DSH_EXITED: 'dsh_exited',
   UNREACHABLE: 'unreachable',
   RENDERER_FAILED: 'renderer_failed',
+  AUTH_REQUIRED: 'auth_required',
 });
 
 function createDshError(code, message) {

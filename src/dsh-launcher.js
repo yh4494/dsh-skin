@@ -7,6 +7,8 @@ const {
   waitForHttp: defaultWaitForHttp,
   diagnoseListen: defaultDiagnoseListen,
 } = require('./http-ready.js');
+const { parseDshWebAuthenticatedUrl } = require('./dsh-web-url.js');
+const { reclaimDshPort: defaultReclaimDshPort } = require('./port-reclaim.js');
 const { DshErrorCode, createDshError } = require('./errors.js');
 
 function defaultKillTree(pid, signal, child) {
@@ -21,13 +23,44 @@ function defaultKillTree(pid, signal, child) {
   }
 }
 
+function attachOutputCapture(child, onAuthenticatedUrl) {
+  let stdoutBuf = '';
+  let resolved = false;
+
+  const consider = (chunk, stream) => {
+    stream.write(chunk);
+    if (resolved) return;
+    stdoutBuf += chunk;
+    // Keep a bounded tail so a long-running process cannot grow this forever.
+    if (stdoutBuf.length > 64 * 1024) {
+      stdoutBuf = stdoutBuf.slice(-32 * 1024);
+    }
+    const url = parseDshWebAuthenticatedUrl(stdoutBuf);
+    if (url) {
+      resolved = true;
+      onAuthenticatedUrl(url);
+    }
+  };
+
+  if (child.stdout) {
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => consider(chunk, process.stdout));
+  }
+  if (child.stderr) {
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+  }
+}
+
 function createLauncher(deps = {}) {
   const isHttpReady = deps.isHttpReady ?? defaultIsHttpReady;
   const waitForHttp = deps.waitForHttp ?? defaultWaitForHttp;
   const diagnoseListen = deps.diagnoseListen ?? defaultDiagnoseListen;
   const resolveDshPath = deps.resolveDshPath ?? defaultResolveDshPath;
+  const reclaimDshPort = deps.reclaimDshPort ?? defaultReclaimDshPort;
   const spawn = deps.spawn ?? defaultSpawn;
   const killGraceMs = deps.killGraceMs ?? 1500;
+  const urlGraceMs = deps.urlGraceMs ?? 5000;
   const killTree =
     deps.killTree ??
     ((pid, signal) => defaultKillTree(pid, signal, state.child));
@@ -37,12 +70,14 @@ function createLauncher(deps = {}) {
     child: null,
     stopping: false,
     exitCbs: [],
+    appUrl: null,
   };
 
   function clearChildState() {
     state.child = null;
     state.owned = false;
     state.stopping = false;
+    state.appUrl = null;
   }
 
   function attachExitHandler(child) {
@@ -112,20 +147,35 @@ function createLauncher(deps = {}) {
     clearChildState();
   }
 
+  /**
+   * Always own a fresh dsh: stop any prior owned child, kill leftover dsh on
+   * the target port, then spawn and capture the launch-token URL.
+   */
   async function start({ port, baseUrl }) {
+    await stop();
+
     if (await isHttpReady(baseUrl)) {
-      // Already owned + ready: keep the existing child (do not orphan).
-      if (state.owned && state.child) {
-        return { reused: true };
+      try {
+        await reclaimDshPort(port);
+      } catch (err) {
+        if (err && err.code === 'port_busy_non_dsh') {
+          throw createDshError(DshErrorCode.PORT_BUSY_NON_HTTP, err.message);
+        }
+        throw err;
       }
-      state.owned = false;
-      state.child = null;
-      return { reused: true };
+    } else {
+      const diag = await diagnoseListen(baseUrl);
+      if (diag === 'non_http') {
+        throw createDshError(DshErrorCode.PORT_BUSY_NON_HTTP, 'port busy non-http');
+      }
     }
 
-    const diag = await diagnoseListen(baseUrl);
-    if (diag === 'non_http') {
-      throw createDshError(DshErrorCode.PORT_BUSY_NON_HTTP, 'port busy non-http');
+    // Port may still look ready briefly after reclaim; refuse to "reuse".
+    if (await isHttpReady(baseUrl)) {
+      throw createDshError(
+        DshErrorCode.PORT_BUSY_NON_HTTP,
+        'port still busy after reclaim',
+      );
     }
 
     const bin = resolveDshPath();
@@ -134,13 +184,23 @@ function createLauncher(deps = {}) {
     }
 
     const child = spawn(bin, ['web', '--no-open', '--port', String(port)], {
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
     state.child = child;
     state.owned = true;
     state.stopping = false;
+    state.appUrl = null;
     attachExitHandler(child);
+
+    let resolveUrl;
+    const urlPromise = new Promise((resolve) => {
+      resolveUrl = resolve;
+    });
+    attachOutputCapture(child, (url) => {
+      state.appUrl = url;
+      resolveUrl(url);
+    });
 
     const spawnFailed = new Promise((_, reject) => {
       child.once('error', (err) => {
@@ -152,7 +212,24 @@ function createLauncher(deps = {}) {
     });
 
     try {
-      await Promise.race([waitForHttp(baseUrl), spawnFailed]);
+      await Promise.race([
+        (async () => {
+          await waitForHttp(baseUrl);
+          const url = await Promise.race([
+            urlPromise,
+            new Promise((resolve) => {
+              setTimeout(() => resolve(null), urlGraceMs);
+            }),
+          ]);
+          if (url) {
+            state.appUrl = url;
+            return;
+          }
+          // Older dsh without launch-token auth: fall back to bare base URL.
+          state.appUrl = baseUrl;
+        })(),
+        spawnFailed,
+      ]);
     } catch (err) {
       await stop();
       if (err && err.code === DshErrorCode.SPAWN_FAILED) {
@@ -164,7 +241,7 @@ function createLauncher(deps = {}) {
       throw err;
     }
 
-    return { reused: false };
+    return { reused: false, appUrl: state.appUrl || baseUrl };
   }
 
   return {
@@ -173,6 +250,9 @@ function createLauncher(deps = {}) {
     },
     get child() {
       return state.child;
+    },
+    get appUrl() {
+      return state.appUrl;
     },
     onExit(cb) {
       state.exitCbs.push(cb);
